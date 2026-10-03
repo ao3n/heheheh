@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Swipe Photo Sorter</title>
+    <!-- Include JSZip library to bundle files for download -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #121212;
+            color: white;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            overflow: hidden;
+            touch-action: none; /* Prevents pull-to-refresh on mobile */
+        }
+        
+        #setup-screen, #summary-screen {
+            text-align: center;
+            padding: 20px;
+            z-index: 10;
+        }
+
+        #swipe-screen {
+            display: none;
+            position: relative;
+            width: 100%;
+            height: 100%;
+            max-width: 500px;
+        }
+
+        .card {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 85%;
+            height: 70%;
+            transform: translate(-50%, -50%);
+            background-color: #222;
+            border-radius: 20px;
+            box-shadow: 0 10px 20px rgba(0,0,0,0.5);
+            background-size: cover;
+            background-position: center;
+            transition: transform 0.3s ease;
+            will-change: transform;
+            cursor: grab;
+        }
+
+        .card:active {
+            cursor: grabbing;
+        }
+
+        .instructions {
+            position: absolute;
+            bottom: 5%;
+            width: 100%;
+            text-align: center;
+            font-size: 1.2rem;
+            color: #aaa;
+            pointer-events: none;
+        }
+
+        .instructions span.left { color: #ff4b4b; }
+        .instructions span.right { color: #4caf50; }
+
+        input[type="file"] {
+            display: none;
+        }
+
+        .btn {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            font-size: 1.1rem;
+            border-radius: 30px;
+            cursor: pointer;
+            margin: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            transition: background-color 0.2s;
+        }
+
+        .btn:hover { background-color: #0056b3; }
+        .btn:disabled { background-color: #555; cursor: not-allowed; }
+        
+        .btn-keep { background-color: #4caf50; }
+        .btn-delete { background-color: #ff4b4b; }
+
+        h1 { margin-bottom: 10px; }
+        p { color: #ccc; margin-bottom: 30px; }
+    </style>
+</head>
+<body>
+
+    <!-- SCREEN 1: UPLOAD -->
+    <div id="setup-screen">
+        <h1>Photo Sorter</h1>
+        <p>Upload photos, swipe left to trash, right to keep.</p>
+        <label for="file-input" class="btn">Select Photos</label>
+        <input type="file" id="file-input" multiple accept="image/*">
+    </div>
+
+    <!-- SCREEN 2: SWIPE -->
+    <div id="swipe-screen">
+        <div id="card-container"></div>
+        <div class="instructions">
+            <span class="left">← Swipe Left to Delete</span> | 
+            <span class="right">Swipe Right to Keep →</span>
+        </div>
+    </div>
+
+    <!-- SCREEN 3: SUMMARY & DOWNLOAD -->
+    <div id="summary-screen" style="display: none;">
+        <h1>All Done!</h1>
+        <p id="summary-text"></p>
+        
+        <button id="btn-download-kept" class="btn btn-keep">Download Kept Photos (ZIP)</button>
+        <br>
+        <button id="btn-download-deleted" class="btn btn-delete">Download Deleted Photos (ZIP)</button>
+        <br>
+        <button class="btn" style="background-color: #555;" onclick="location.reload()">Start Over</button>
+        
+        <p style="font-size: 0.9rem; margin-top: 30px;">
+            *Tip: Download the "Kept" ZIP, then delete all original photos from your phone gallery to clear space!
+        </p>
+    </div>
+
+    <script>
+        const fileInput = document.getElementById('file-input');
+        const setupScreen = document.getElementById('setup-screen');
+        const swipeScreen = document.getElementById('swipe-screen');
+        const summaryScreen = document.getElementById('summary-screen');
+        const cardContainer = document.getElementById('card-container');
+        const summaryText = document.getElementById('summary-text');
+        
+        let files = [];
+        let keptFiles = [];
+        let deletedFiles = [];
+        let currentIndex = 0;
+
+        // Handle file selection
+        fileInput.addEventListener('change', (e) => {
+            files = Array.from(e.target.files);
+            if (files.length > 0) {
+                setupScreen.style.display = 'none';
+                swipeScreen.style.display = 'block';
+                renderCards();
+            }
+        });
+
+        function renderCards() {
+            cardContainer.innerHTML = '';
+            // Render from back to front
+            for (let i = files.length - 1; i >= currentIndex; i--) {
+                const file = files[i];
+                const url = URL.createObjectURL(file);
+                
+                const card = document.createElement('div');
+                card.className = 'card';
+                card.style.backgroundImage = `url(${url})`;
+                card.dataset.index = i;
+                
+                // Only make the top card interactive
+                if (i === currentIndex) {
+                    addSwipeLogic(card);
+                }
+                
+                cardContainer.appendChild(card);
+            }
+        }
+
+        function addSwipeLogic(card) {
+            let startX = 0;
+            let currentX = 0;
+            let isDragging = false;
+            
+            const threshold = window.innerWidth * 0.25; // 25% of screen width to trigger swipe
+
+            // Touch & Mouse Events
+            card.addEventListener('pointerdown', (e) => {
+                isDragging = true;
+                startX = e.clientX;
+                card.style.transition = 'none';
+            });
+
+            document.addEventListener('pointermove', (e) => {
+                if (!isDragging) return;
+                currentX = e.clientX - startX;
+                const rotate = currentX * 0.05;
+                card.style.transform = `translate(calc(-50% + ${currentX}px), -50%) rotate(${rotate}deg)`;
+            });
+
+            document.addEventListener('pointerup', (e) => {
+                if (!isDragging) return;
+                isDragging = false;
+                card.style.transition = 'transform 0.3s ease';
+
+                if (currentX > threshold) {
+                    // Swiped Right - KEEP
+                    card.style.transform = `translate(calc(150vw), -50%) rotate(30deg)`;
+                    keptFiles.push(files[currentIndex]);
+                    nextCard();
+                } else if (currentX < -threshold) {
+                    // Swiped Left - DELETE
+                    card.style.transform = `translate(calc(-150vw), -50%) rotate(-30deg)`;
+                    deletedFiles.push(files[currentIndex]);
+                    nextCard();
+                } else {
+                    // Snap back to center
+                    card.style.transform = `translate(-50%, -50%) rotate(0deg)`;
+                }
+                currentX = 0;
+            });
+        }
+
+        function nextCard() {
+            currentIndex++;
+            setTimeout(() => {
+                if (currentIndex < files.length) {
+                    renderCards();
+                } else {
+                    showSummary();
+                }
+            }, 300); // Wait for animation to finish
+        }
+
+        function showSummary() {
+            swipeScreen.style.display = 'none';
+            summaryScreen.style.display = 'block';
+            summaryText.innerHTML = `You kept <b>${keptFiles.length}</b> photos and marked <b>${deletedFiles.length}</b> for deletion.`;
+        }
+
+        // --- ZIP GENERATION LOGIC ---
+
+        async function downloadZip(fileArray, zipName, buttonElement) {
+            if (fileArray.length === 0) {
+                alert("No photos in this list!");
+                return;
+            }
+
+            const originalText = buttonElement.innerText;
+            buttonElement.innerText = "Zipping files... please wait.";
+            buttonElement.disabled = true;
+
+            const zip = new JSZip();
+            
+            // Add each file to the zip
+            fileArray.forEach(file => {
+                zip.file(file.name, file);
+            });
+
+            // Generate ZIP file
+            const content = await zip.generateAsync({ type: "blob" });
+            
+            // Create a download link and trigger it
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(content);
+            link.download = zipName;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+
+            // Reset button
+            buttonElement.innerText = originalText;
+            buttonElement.disabled = false;
+        }
+
+        document.getElementById('btn-download-kept').addEventListener('click', function() {
+            downloadZip(keptFiles, 'Kept_Photos.zip', this);
+        });
+
+        document.getElementById('btn-download-deleted').addEventListener('click', function() {
+            downloadZip(deletedFiles, 'Photos_To_Delete.zip', this);
+        });
+
+    </script>
+</body>
+</html>
